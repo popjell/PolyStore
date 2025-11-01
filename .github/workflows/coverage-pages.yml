@@ -46,6 +46,10 @@ jobs:
           __all__ = ["AutoRegisterMeta", "RegistryConfig", "PRIMARY_KEY", "RegistryError"]
           EOF
 
+      - name: Verify installation
+        run: |
+          python -c "import polystore; print(f'polystore {polystore.__version__} installed successfully')"
+
       - name: Run tests with coverage
         run: |
           mkdir -p site
