@@ -316,6 +316,19 @@ class MemoryBackend(StorageBackend):
         key = parts[-1]
         return isinstance(current.get(key), MemorySymlink)
 
+    def exists(self, path: Union[str, Path]) -> bool:
+        """
+        Check if a path exists in memory storage.
+
+        Args:
+            path: Path to check
+
+        Returns:
+            bool: True if path exists (as file or directory), False otherwise
+        """
+        key = self._normalize(path)
+        return key in self._memory_store
+
     def is_file(self, path: Union[str, Path]) -> bool:
         """
         Check if a memory path points to a file.
