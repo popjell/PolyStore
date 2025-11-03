@@ -37,24 +37,27 @@ class MemoryBackend(StorageBackend):
         """
         Normalize paths for memory backend storage.
 
-        Memory backend uses relative paths internally to avoid conflicts
-        between absolute paths from different systems. This method converts
-        absolute paths to relative paths by removing the root component.
+        Memory backend uses absolute paths internally for consistency.
+        This method ensures paths are converted to absolute form.
 
         Args:
             path: Path to normalize (absolute or relative)
+            bypass_normalization: If True, return path as-is
 
         Returns:
-            Normalized relative path string
+            Normalized absolute path string
         """
         path_obj = Path(path)
 
         if bypass_normalization:
             return path_obj.as_posix()
 
-        # Store paths as-is - no forced relative conversion
-        # This preserves absolute paths which are needed for cross-backend operations
-        return path_obj.as_posix()
+        # Convert to absolute path by prepending / if relative
+        posix_path = path_obj.as_posix()
+        if not posix_path.startswith('/'):
+            posix_path = '/' + posix_path
+        
+        return posix_path
 
     def load(self, file_path: Union[str, Path], **kwargs) -> Any:
         key = self._normalize(file_path)
@@ -319,6 +322,9 @@ class MemoryBackend(StorageBackend):
         """
         Check if a memory path points to a file.
 
+        Raises:
+            IsADirectoryError: If path exists and is a directory
+
         Returns:
             bool: True if path exists and is a file, False otherwise
         """
@@ -328,8 +334,11 @@ class MemoryBackend(StorageBackend):
             return False
 
         value = self._memory_store[key]
-        # File if value is not None (directories have None value)
-        return value is not None
+        # Raise if it's a directory
+        if value is None:
+            raise IsADirectoryError(f"Path is a directory: {path}")
+        # File if value is not None
+        return True
     
     def is_dir(self, path: Union[str, Path]) -> bool:
         """
@@ -337,6 +346,9 @@ class MemoryBackend(StorageBackend):
 
         Args:
             path: Path to check
+
+        Raises:
+            NotADirectoryError: If path exists and is a file
 
         Returns:
             bool: True if path exists and is a directory, False otherwise
@@ -347,8 +359,11 @@ class MemoryBackend(StorageBackend):
             return False
 
         value = self._memory_store[key]
+        # Raise if it's a file
+        if value is not None:
+            raise NotADirectoryError(f"Path is not a directory: {path}")
         # Directory if value is None
-        return value is None
+        return True
     
     def _resolve_path(self, path: Union[str, Path]) -> Optional[Any]:
         """
