@@ -268,7 +268,7 @@ class TestFileManagerMemoryBackend:
     def test_save_load_memory(self, file_manager):
         """Test save/load with memory backend."""
         data = np.random.rand(10, 10)
-        path = "/test.npy"
+        path = "/test_exists.npy"
 
         # Ensure parent directory exists in memory
         file_manager.ensure_directory("/", backend="memory")
@@ -308,7 +308,7 @@ class TestFileManagerMemoryBackend:
 
     def test_exists_memory(self, file_manager):
         """Test exists() with memory backend."""
-        path = "/test.npy"
+        path = "/test_exists.npy"
 
         # Ensure parent directory exists
         file_manager.ensure_directory("/", backend="memory")
