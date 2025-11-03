@@ -9,10 +9,10 @@ This module targets specific areas like:
 - Path resolution edge cases
 """
 
-import pytest
+from unittest.mock import Mock, patch
+
 import numpy as np
-from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+import pytest
 
 from polystore import MemoryBackend
 from polystore.exceptions import StorageResolutionError
@@ -344,8 +344,8 @@ class TestMemoryClearFilesOnly:
         assert self.backend.is_dir("/base/sub1")
         assert self.backend.is_dir("/base/sub2")
 
-    @patch.object(MemoryBackend, '_is_gpu_object', return_value=True)
-    @patch.object(MemoryBackend, '_explicit_gpu_delete')
+    @patch.object(MemoryBackend, "_is_gpu_object", return_value=True)
+    @patch.object(MemoryBackend, "_explicit_gpu_delete")
     def test_clear_files_only_gpu_cleanup(self, mock_gpu_delete, mock_is_gpu):
         """Test clear_files_only calls GPU cleanup for GPU objects."""
         # Create mock GPU object
@@ -377,10 +377,12 @@ class TestMemoryIsGPUObject:
         mock_cupy = Mock()
         mock_cupy.__class__ = Mock()
         # Mock the type string to contain 'cupy'
-        type(mock_cupy).__name__ = 'ndarray'
+        type(mock_cupy).__name__ = "ndarray"
 
         # Create a side effect that returns True for string check
-        with patch('builtins.str', side_effect=lambda x: 'cupy' if x is type(mock_cupy) else str(x)):
+        with patch(
+            "builtins.str", side_effect=lambda x: "cupy" if x is type(mock_cupy) else str(x)
+        ):
             result = self.backend._is_gpu_object(mock_cupy)
             # Result depends on the mock setup, but method shouldn't crash
             assert isinstance(result, bool)

@@ -6,10 +6,10 @@ This module provides an in-memory implementation of the StorageBackend interface
 It stores data in memory and supports directory operations.
 """
 
-import logging
 import copy as py_copy
+import logging
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any
 
 from .base import StorageBackend
 from .exceptions import StorageResolutionError
@@ -19,8 +19,10 @@ logger = logging.getLogger(__name__)
 
 class MemoryBackend(StorageBackend):
     """Memory storage backend with automatic registration."""
+
     _backend_type = "memory"
-    def __init__(self, shared_dict: Optional[Dict[str, Any]] = None):
+
+    def __init__(self, shared_dict: dict[str, Any] | None = None):
         """
         Initializes the memory storage.
 
@@ -33,7 +35,7 @@ class MemoryBackend(StorageBackend):
         self._memory_store = shared_dict if shared_dict is not None else {}
         self._prefixes = set()  # Declared directory-like namespaces
 
-    def _normalize(self, path: Union[str, Path],bypass_normalization=False) -> str:
+    def _normalize(self, path: str | Path, bypass_normalization=False) -> str:
         """
         Normalize paths for memory backend storage.
 
@@ -54,12 +56,12 @@ class MemoryBackend(StorageBackend):
 
         # Convert to absolute path by prepending / if relative
         posix_path = path_obj.as_posix()
-        if not posix_path.startswith('/'):
-            posix_path = '/' + posix_path
-        
+        if not posix_path.startswith("/"):
+            posix_path = "/" + posix_path
+
         return posix_path
 
-    def load(self, file_path: Union[str, Path], **kwargs) -> Any:
+    def load(self, file_path: str | Path, **kwargs) -> Any:
         key = self._normalize(file_path)
 
         if key not in self._memory_store:
@@ -71,12 +73,12 @@ class MemoryBackend(StorageBackend):
 
         return value
 
-    def save(self, data: Any, output_path: Union[str, Path], **kwargs) -> None:
+    def save(self, data: Any, output_path: str | Path, **kwargs) -> None:
         key = self._normalize(output_path)
 
         # Check if parent directory exists (simple flat structure)
         parent_path = self._normalize(Path(key).parent)
-        if parent_path != '.' and parent_path not in self._memory_store:
+        if parent_path != "." and parent_path not in self._memory_store:
             raise FileNotFoundError(f"Parent path does not exist: {output_path}")
 
         # Check if file already exists
@@ -86,7 +88,7 @@ class MemoryBackend(StorageBackend):
 
         # Save the file
 
-    def load_batch(self, file_paths: List[Union[str, Path]]) -> List[Any]:
+    def load_batch(self, file_paths: list[str | Path]) -> list[Any]:
         """
         Load multiple files sequentially using existing load method.
 
@@ -103,7 +105,7 @@ class MemoryBackend(StorageBackend):
             results.append(result)
         return results
 
-    def save_batch(self, data_list: List[Any], output_paths: List[Union[str, Path]]) -> None:
+    def save_batch(self, data_list: list[Any], output_paths: list[str | Path]) -> None:
         """
         Save multiple files sequentially using existing save method.
 
@@ -116,18 +118,20 @@ class MemoryBackend(StorageBackend):
             ValueError: If data_list and output_paths have different lengths
         """
         if len(data_list) != len(output_paths):
-            raise ValueError(f"data_list length ({len(data_list)}) must match output_paths length ({len(output_paths)})")
+            raise ValueError(
+                f"data_list length ({len(data_list)}) must match output_paths length ({len(output_paths)})"
+            )
 
-        for data, output_path in zip(data_list, output_paths):
+        for data, output_path in zip(data_list, output_paths, strict=False):
             self.save(data, output_path)
 
     def list_files(
         self,
-        directory: Union[str, Path],
+        directory: str | Path,
         pattern: str = "*",
-        extensions: Optional[Set[str]] = None,
-        recursive: bool = False
-    ) -> List[Path]:
+        extensions: set[str] | None = None,
+        recursive: bool = False,
+    ) -> list[Path]:
         from fnmatch import fnmatch
 
         dir_key = self._normalize(directory)
@@ -147,7 +151,7 @@ class MemoryBackend(StorageBackend):
                 continue
 
             # Get relative path from directory
-            rel_path = path[len(dir_prefix):]
+            rel_path = path[len(dir_prefix) :]
 
             # Skip if recursive=False and path has subdirectories
             if not recursive and "/" in rel_path:
@@ -160,7 +164,7 @@ class MemoryBackend(StorageBackend):
                 if pattern is None or fnmatch(filename, pattern):
                     if not extensions or Path(filename).suffix in extensions:
                         # Calculate depth for breadth-first sorting
-                        depth = rel_path.count('/')
+                        depth = rel_path.count("/")
                         result.append((Path(path), depth))
 
         # Sort by depth first (breadth-first), then by path for consistency
@@ -169,7 +173,7 @@ class MemoryBackend(StorageBackend):
         # Return just the paths
         return [path for path, _ in result]
 
-    def list_dir(self, path: Union[str, Path]) -> List[str]:
+    def list_dir(self, path: str | Path) -> list[str]:
         dir_key = self._normalize(path)
 
         # Check if directory exists and is a directory
@@ -184,7 +188,7 @@ class MemoryBackend(StorageBackend):
 
         for stored_path in list(self._memory_store.keys()):
             if stored_path.startswith(dir_prefix):
-                rel_path = stored_path[len(dir_prefix):]
+                rel_path = stored_path[len(dir_prefix) :]
                 # Only direct children (no subdirectories)
                 if "/" not in rel_path:
                     result.add(rel_path)
@@ -195,8 +199,7 @@ class MemoryBackend(StorageBackend):
 
         return list(result)
 
-    
-    def delete(self, path: Union[str, Path]) -> None:
+    def delete(self, path: str | Path) -> None:
         """
         Delete a file or empty directory from the in-memory store.
 
@@ -227,8 +230,8 @@ class MemoryBackend(StorageBackend):
             del self._memory_store[key]
         except Exception as e:
             raise StorageResolutionError(f"Failed to delete path from memory store: {path}") from e
-    
-    def delete_all(self, path: Union[str, Path]) -> None:
+
+    def delete_all(self, path: str | Path) -> None:
         """
         Recursively delete a file, empty directory, or a nested directory tree
         from the in-memory store.
@@ -253,14 +256,16 @@ class MemoryBackend(StorageBackend):
 
             # If it was a directory, delete all children
             dir_prefix = key + "/" if not key.endswith("/") else key
-            keys_to_delete = [k for k in list(self._memory_store.keys()) if k.startswith(dir_prefix)]
+            keys_to_delete = [
+                k for k in list(self._memory_store.keys()) if k.startswith(dir_prefix)
+            ]
             for k in keys_to_delete:
                 del self._memory_store[k]
 
         except Exception as e:
             raise StorageResolutionError(f"Failed to recursively delete path: {path}") from e
 
-    def ensure_directory(self, directory: Union[str, Path]) -> PurePosixPath:
+    def ensure_directory(self, directory: str | Path) -> PurePosixPath:
         key = self._normalize(directory)
         self._prefixes.add(key if key.endswith("/") else key + "/")
 
@@ -278,8 +283,9 @@ class MemoryBackend(StorageBackend):
         # forward slashes across platforms (important for Windows CI/tests)
         return PurePosixPath(key)
 
-
-    def create_symlink(self, source: Union[str, Path], link_name: Union[str, Path], overwrite: bool = False):
+    def create_symlink(
+        self, source: str | Path, link_name: str | Path, overwrite: bool = False
+    ):
         src_key = self._normalize(source)
         link_key = self._normalize(link_name)
 
@@ -289,7 +295,7 @@ class MemoryBackend(StorageBackend):
 
         # Check destination parent exists
         link_parent = self._normalize(Path(link_key).parent)
-        if link_parent != '.' and link_parent not in self._memory_store:
+        if link_parent != "." and link_parent not in self._memory_store:
             raise FileNotFoundError(f"Destination parent path does not exist: {link_name}")
 
         # Check if destination already exists
@@ -301,11 +307,11 @@ class MemoryBackend(StorageBackend):
 
         self._memory_store[link_key] = MemorySymlink(target=str(source))
 
-    def is_symlink(self, path: Union[str, Path]) -> bool:
+    def is_symlink(self, path: str | Path) -> bool:
         key = self._normalize(path)
         return isinstance(self._memory_store.get(key), MemorySymlink)
 
-    def exists(self, path: Union[str, Path]) -> bool:
+    def exists(self, path: str | Path) -> bool:
         """
         Check if a path exists in memory storage.
 
@@ -318,7 +324,7 @@ class MemoryBackend(StorageBackend):
         key = self._normalize(path)
         return key in self._memory_store
 
-    def is_file(self, path: Union[str, Path]) -> bool:
+    def is_file(self, path: str | Path) -> bool:
         """
         Check if a memory path points to a file.
 
@@ -339,8 +345,8 @@ class MemoryBackend(StorageBackend):
             raise IsADirectoryError(f"Path is a directory: {path}")
         # File if value is not None
         return True
-    
-    def is_dir(self, path: Union[str, Path]) -> bool:
+
+    def is_dir(self, path: str | Path) -> bool:
         """
         Check if a memory path points to a directory.
 
@@ -364,8 +370,8 @@ class MemoryBackend(StorageBackend):
             raise NotADirectoryError(f"Path is not a directory: {path}")
         # Directory if value is None
         return True
-    
-    def _resolve_path(self, path: Union[str, Path]) -> Optional[Any]:
+
+    def _resolve_path(self, path: str | Path) -> Any | None:
         """
         Resolves a memory-style virtual path into an in-memory object (file or directory).
 
@@ -378,7 +384,7 @@ class MemoryBackend(StorageBackend):
         key = self._normalize(path)
         return self._memory_store.get(key)
 
-    def move(self, src: Union[str, Path], dst: Union[str, Path]) -> None:
+    def move(self, src: str | Path, dst: str | Path) -> None:
         """
         Move a file or directory within the memory store. Symlinks are preserved as objects.
 
@@ -389,48 +395,48 @@ class MemoryBackend(StorageBackend):
         """
         src_key = self._normalize(src)
         dst_key = self._normalize(dst)
-        
+
         # Check source exists
         if src_key not in self._memory_store:
             raise FileNotFoundError(f"Source not found: {src}")
-        
+
         # Check destination parent exists and is a directory
         dst_parent = self._normalize(Path(dst_key).parent)
-        if dst_parent != '.':
+        if dst_parent != ".":
             if dst_parent not in self._memory_store:
                 raise FileNotFoundError(f"Destination parent path does not exist: {dst}")
             # Check if parent is actually a directory (None value)
             if self._memory_store[dst_parent] is not None:
                 raise StorageResolutionError(f"Destination parent is not a directory: {dst_parent}")
-        
+
         # Check destination doesn't exist
         if dst_key in self._memory_store:
             raise FileExistsError(f"Destination already exists: {dst}")
-        
+
         # Move the item (works for files and directories)
         self._memory_store[dst_key] = self._memory_store.pop(src_key)
-        
+
         # If moving a directory, also move all files/subdirs under it
         if self._memory_store[dst_key] is None:  # It's a directory
             src_prefix = src_key if src_key.endswith("/") else src_key + "/"
             dst_prefix = dst_key if dst_key.endswith("/") else dst_key + "/"
-            
+
             # Find all items under source directory and move them
             keys_to_move = [k for k in self._memory_store.keys() if k.startswith(src_prefix)]
             for key in keys_to_move:
-                rel_path = key[len(src_prefix):]
+                rel_path = key[len(src_prefix) :]
                 new_key = dst_prefix + rel_path
                 self._memory_store[new_key] = self._memory_store.pop(key)
 
-    def copy(self, src: Union[str, Path], dst: Union[str, Path]) -> None:
+    def copy(self, src: str | Path, dst: str | Path) -> None:
         """
         Copy a file, directory, or symlink within the memory store.
-    
+
         - Respects structural separation (no fallback)
         - Will not overwrite destination
         - Will not create missing parent directories
         - Symlinks are copied as objects
-    
+
         Raises:
             FileNotFoundError: If src does not exist or dst parent is missing
             FileExistsError: If dst already exists
@@ -438,40 +444,40 @@ class MemoryBackend(StorageBackend):
         """
         src_key = self._normalize(src)
         dst_key = self._normalize(dst)
-        
+
         # Check source exists
         if src_key not in self._memory_store:
             raise FileNotFoundError(f"Source not found: {src}")
-        
+
         # Check destination parent exists and is a directory
         dst_parent = self._normalize(Path(dst_key).parent)
-        if dst_parent != '.':
+        if dst_parent != ".":
             if dst_parent not in self._memory_store:
                 raise FileNotFoundError(f"Destination parent path does not exist: {dst}")
             # Check if parent is actually a directory (None value)
             if self._memory_store[dst_parent] is not None:
                 raise StorageResolutionError(f"Destination parent is not a directory: {dst_parent}")
-        
+
         # Check destination doesn't exist
         if dst_key in self._memory_store:
             raise FileExistsError(f"Destination already exists: {dst}")
-        
+
         # Copy the item (deep copy to avoid aliasing)
         self._memory_store[dst_key] = py_copy.deepcopy(self._memory_store[src_key])
-        
+
         # If copying a directory, also copy all files/subdirs under it
         if self._memory_store[dst_key] is None:  # It's a directory
             src_prefix = src_key if src_key.endswith("/") else src_key + "/"
             dst_prefix = dst_key if dst_key.endswith("/") else dst_key + "/"
-            
+
             # Find all items under source directory and copy them
             keys_to_copy = [k for k in self._memory_store.keys() if k.startswith(src_prefix)]
             for key in keys_to_copy:
-                rel_path = key[len(src_prefix):]
+                rel_path = key[len(src_prefix) :]
                 new_key = dst_prefix + rel_path
                 self._memory_store[new_key] = py_copy.deepcopy(self._memory_store[key])
-    
-    def stat(self, path: Union[str, Path]) -> Dict[str, Any]:
+
+    def stat(self, path: str | Path) -> dict[str, Any]:
         """
         Return structural metadata about a memory-backed path.
 
@@ -486,18 +492,14 @@ class MemoryBackend(StorageBackend):
             StorageResolutionError: On resolution failure
         """
         key = self._normalize(path)
-        
+
         try:
             # Check if path exists in store
             if key not in self._memory_store:
-                return {
-                    "type": "missing",
-                    "path": str(path),
-                    "exists": False
-                }
-            
+                return {"type": "missing", "path": str(path), "exists": False}
+
             obj = self._memory_store[key]
-            
+
             # Check if it's a symlink
             if isinstance(obj, MemorySymlink):
                 # Check if symlink target exists
@@ -506,23 +508,15 @@ class MemoryBackend(StorageBackend):
                     "type": "symlink",
                     "path": str(path),
                     "target": obj.target,
-                    "exists": target_exists
+                    "exists": target_exists,
                 }
-            
+
             # Check if it's a directory (None value)
             if obj is None:
-                return {
-                    "type": "directory",
-                    "path": str(path),
-                    "exists": True
-                }
-            
+                return {"type": "directory", "path": str(path), "exists": True}
+
             # Otherwise it's a file
-            return {
-                "type": "file",
-                "path": str(path),
-                "exists": True
-            }
+            return {"type": "file", "path": str(path), "exists": True}
 
         except Exception as e:
             raise StorageResolutionError(f"Failed to stat memory path: {path}") from e
@@ -562,8 +556,10 @@ class MemoryBackend(StorageBackend):
             for key in files_to_delete:
                 del self._memory_store[key]
 
-            logger.debug(f"Cleared {len(files_to_delete)} files from memory backend (including {gpu_objects_found} GPU objects), "
-                        f"preserved {len(self._memory_store)} directories")
+            logger.debug(
+                f"Cleared {len(files_to_delete)} files from memory backend (including {gpu_objects_found} GPU objects), "
+                f"preserved {len(self._memory_store)} directories"
+            )
 
         except Exception as e:
             raise StorageResolutionError("Failed to clear files from memory store") from e
@@ -580,17 +576,17 @@ class MemoryBackend(StorageBackend):
         """
         try:
             # Check for PyTorch tensors on GPU
-            if hasattr(obj, 'device') and hasattr(obj, 'is_cuda'):
+            if hasattr(obj, "device") and hasattr(obj, "is_cuda"):
                 if obj.is_cuda:
                     return True
 
             # Check for CuPy arrays
-            if hasattr(obj, '__class__') and 'cupy' in str(type(obj)):
+            if hasattr(obj, "__class__") and "cupy" in str(type(obj)):
                 return True
 
             # Check for other GPU arrays by device attribute
-            if hasattr(obj, 'device') and hasattr(obj.device, 'type'):
-                if 'cuda' in str(obj.device.type).lower() or 'gpu' in str(obj.device.type).lower():
+            if hasattr(obj, "device") and hasattr(obj.device, "type"):
+                if "cuda" in str(obj.device.type).lower() or "gpu" in str(obj.device.type).lower():
                     return True
 
             return False
@@ -608,7 +604,7 @@ class MemoryBackend(StorageBackend):
         """
         try:
             # For PyTorch tensors
-            if hasattr(obj, 'device') and hasattr(obj, 'is_cuda') and obj.is_cuda:
+            if hasattr(obj, "device") and hasattr(obj, "is_cuda") and obj.is_cuda:
                 device_id = obj.device.index if obj.device.index is not None else 0
                 # Move to CPU first to free GPU memory, then delete
                 obj_cpu = obj.cpu()
@@ -617,17 +613,18 @@ class MemoryBackend(StorageBackend):
                 return
 
             # For CuPy arrays
-            if hasattr(obj, '__class__') and 'cupy' in str(type(obj)):
+            if hasattr(obj, "__class__") and "cupy" in str(type(obj)):
                 # CuPy arrays are automatically freed when deleted
                 logger.debug(f"🔥 EXPLICIT GPU DELETE: CuPy array {key}")
                 return
 
             # For other GPU objects
-            if hasattr(obj, 'device'):
+            if hasattr(obj, "device"):
                 logger.debug(f"🔥 EXPLICIT GPU DELETE: GPU object {key} on device {obj.device}")
 
         except Exception as e:
             logger.warning(f"Failed to explicitly delete GPU object {key}: {e}")
+
 
 class MemorySymlink:
     def __init__(self, target: str):
