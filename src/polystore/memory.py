@@ -283,9 +283,7 @@ class MemoryBackend(StorageBackend):
         # forward slashes across platforms (important for Windows CI/tests)
         return PurePosixPath(key)
 
-    def create_symlink(
-        self, source: str | Path, link_name: str | Path, overwrite: bool = False
-    ):
+    def create_symlink(self, source: str | Path, link_name: str | Path, overwrite: bool = False):
         src_key = self._normalize(source)
         link_key = self._normalize(link_name)
 

@@ -1,6 +1,5 @@
 """Comprehensive tests for MemoryBackend."""
 
-
 import numpy as np
 import pytest
 
