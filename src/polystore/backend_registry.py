@@ -1,33 +1,23 @@
 """
 Storage backend metaclass registration system.
 
+Eliminates hardcoded backend registration by using metaclass auto-registration.
 Backends are automatically discovered and registered when their classes are defined.
 """
 
 import logging
-from typing import Dict
+from typing import Callable, Dict, List
+
 from .base import BackendBase, DataSink
 
 logger = logging.getLogger(__name__)
 
 _backend_instances: Dict[str, DataSink] = {}
+_cleanup_callbacks: List[Callable[[], None]] = []
 
-
-def _get_storage_backends() -> Dict:
-    """Get the storage backends registry, ensuring it's initialized."""
-    # Import backends to trigger registration
-    from . import memory, disk
-    try:
-        from . import zarr
-    except ImportError:
-        pass  # Zarr not available
-    
-    # Registry auto-created by AutoRegisterMeta on BackendBase
-    return BackendBase.__registry__
-
-
-# Lazy access to registry
-STORAGE_BACKENDS = None
+# Registry auto-created by AutoRegisterMeta on BackendBase
+# Includes both StorageBackend (read-write) and ReadOnlyBackend (read-only) subclasses
+STORAGE_BACKENDS = BackendBase.__registry__
 
 
 def get_backend_instance(backend_type: str) -> DataSink:
@@ -44,19 +34,20 @@ def get_backend_instance(backend_type: str) -> DataSink:
         KeyError: If backend type not registered
         RuntimeError: If backend instantiation fails
     """
-    backend_type = backend_type.lower()
+    if hasattr(backend_type, "value"):
+        backend_type = backend_type.value
+    backend_type = str(backend_type).lower()
 
     # Return cached instance if available
     if backend_type in _backend_instances:
         return _backend_instances[backend_type]
 
     # Get backend class from registry
-    storage_backends = _get_storage_backends()
-    if backend_type not in storage_backends:
+    if backend_type not in STORAGE_BACKENDS:
         raise KeyError(f"Backend type '{backend_type}' not registered. "
-                      f"Available backends: {list(storage_backends.keys())}")
+                      f"Available backends: {list(STORAGE_BACKENDS.keys())}")
 
-    backend_class = storage_backends[backend_type]
+    backend_class = STORAGE_BACKENDS[backend_type]
 
     try:
         # Create and cache instance
@@ -75,15 +66,18 @@ def create_storage_registry() -> Dict[str, DataSink]:
     Returns:
         Dictionary mapping backend types to instances
     """
-    # Get backends registry (triggers import and registration)
-    storage_backends = _get_storage_backends()
+    # Trigger discovery of all backends in polystore package
+    # This imports all backend modules (disk, memory, zarr, napari_stream, fiji_stream, etc.)
+    # and registers them via metaclass
+    STORAGE_BACKENDS._discover()
+    logger.debug("Triggered backend discovery via LazyDiscoveryDict")
 
     # Backends that require context-specific initialization (e.g., plate_root)
     # These are registered lazily when needed, not at startup
-    SKIP_BACKENDS = {'virtual_workspace'}
+    SKIP_BACKENDS = {'virtual_workspace', 'omero_local'}
 
     registry = {}
-    for backend_type in storage_backends.keys():
+    for backend_type in STORAGE_BACKENDS.keys():
         # Skip backends that need context-specific initialization
         if backend_type in SKIP_BACKENDS:
             logger.debug(f"Skipping backend '{backend_type}' - requires context-specific initialization")
@@ -97,6 +91,11 @@ def create_storage_registry() -> Dict[str, DataSink]:
 
     logger.info(f"Created storage registry with {len(registry)} backends: {list(registry.keys())}")
     return registry
+
+
+def register_cleanup_callback(callback: Callable[[], None]) -> None:
+    """Register an integration-specific cleanup callback."""
+    _cleanup_callbacks.append(callback)
 
 
 def cleanup_backend_connections() -> None:
@@ -132,29 +131,13 @@ def cleanup_backend_connections() -> None:
 
     # In test mode, also stop viewer processes to allow pytest to exit
     if is_test_mode:
-        try:
-            from openhcs.runtime.napari_stream_visualizer import _cleanup_global_viewer
-            _cleanup_global_viewer()
-            logger.debug("Cleaned up napari viewer for test mode")
-        except ImportError:
-            pass  # napari not available
-        except Exception as e:
-            logger.warning(f"Failed to cleanup napari viewer: {e}")
+        for callback in list(_cleanup_callbacks):
+            try:
+                callback()
+            except Exception as e:
+                logger.warning(f"Cleanup callback failed: {e}")
 
-
-class BackendRegistry(dict):
-    """
-    Registry for storage backends.
-
-    This is a dictionary that automatically populates with available backends
-    when first accessed.
-    """
-
-    def __init__(self):
-        """Initialize the backend registry."""
-        super().__init__()
-        # Populate with available backends
-        self.update(create_storage_registry())
+    logger.info(f"Backend connections cleaned up ({'test mode' if is_test_mode else 'viewer windows preserved'})")
 
 
 def cleanup_all_backends() -> None:
@@ -174,6 +157,4 @@ def cleanup_all_backends() -> None:
 
     _backend_instances.clear()
     logger.info("All backend instances cleaned up")
-
-
 

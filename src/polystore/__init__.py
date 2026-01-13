@@ -1,85 +1,140 @@
 """
-Polystore - Framework-agnostic multi-backend storage abstraction.
-
-Provides pluggable storage backends with multi-framework I/O support for
-NumPy, PyTorch, JAX, TensorFlow, CuPy, and Zarr.
+Polystore package exports.
 """
 
-__version__ = "0.1.2"
+import os
 
-# Core abstractions
+from .atomic import file_lock, atomic_write_json, atomic_update_json, FileLockError, FileLockTimeoutError
+from .backend_registry import (
+    get_backend_instance,
+    cleanup_backend_connections,
+    cleanup_all_backends,
+    register_cleanup_callback,
+    STORAGE_BACKENDS,
+)
 from .base import (
+    BackendBase,
     DataSink,
     DataSource,
-    StorageBackend,
-    VirtualBackend,
     ReadOnlyBackend,
+    StorageBackend,
+    storage_registry,
+    reset_memory_backend,
+    ensure_storage_registry,
+    get_backend,
 )
-
-# Concrete backends
-from .memory import MemoryBackend
-from .disk import DiskBackend
-
-# Optional backends
-# Zarr is a required backend for this project. Import it directly so
-# missing dependency errors surface loudly during test/setup.
-from .zarr import ZarrBackend
-
-# File manager
+from .constants import Backend, MemoryType, TransportMode
+from .disk import DiskStorageBackend
 from .filemanager import FileManager
-
-# Registry
-from .backend_registry import BackendRegistry, create_storage_registry
-
-# Atomic operations
-from .atomic import atomic_write, atomic_write_json
-
-# Exceptions
-from .exceptions import (
-    StorageError,
-    StorageResolutionError,
-    BackendNotFoundError,
-    UnsupportedFormatError,
+from .formats import FileFormat, DEFAULT_IMAGE_EXTENSIONS
+from .memory import MemoryStorageBackend
+from .metadata_writer import (
+    AtomicMetadataWriter,
+    MetadataWriteError,
+    METADATA_CONFIG,
+    get_metadata_path,
+    get_subdirectory_name,
+    resolve_subdirectory_path,
 )
-
-# Streaming (optional and lazy)
-# Don't import at module level - streaming is heavy and optional
-# Users can import manually if needed: from polystore.streaming import StreamingBackend
-try:
-    from .streaming import StreamingBackend
-except ImportError:
-    StreamingBackend = None
-# Streaming (optional and lazy)
-# Don't import at module level - streaming is heavy and optional
-# Users can import manually if needed: from polystore.streaming import StreamingBackend
-StreamingBackend = None
+from .metadata_migration import detect_legacy_format, migrate_legacy_metadata, migrate_plate_metadata
+from .pipeline_migration import detect_legacy_pipeline, migrate_pipeline_file, load_pipeline_with_migration
+from .roi import (
+    ROI,
+    PolygonShape,
+    PolylineShape,
+    MaskShape,
+    PointShape,
+    EllipseShape,
+    extract_rois_from_labeled_mask,
+    load_rois_from_json,
+    load_rois_from_zip,
+    materialize_rois,
+)
+from .streaming import StreamingBackend
+from .streaming_constants import StreamingDataType, NapariShapeType
 
 __all__ = [
-    # Version
-    "__version__",
-    # Core abstractions
+    "Backend",
+    "MemoryType",
+    "TransportMode",
+    "FileFormat",
+    "DEFAULT_IMAGE_EXTENSIONS",
+    "BackendBase",
     "DataSink",
     "DataSource",
-    "StorageBackend",
-    "VirtualBackend",
     "ReadOnlyBackend",
-    # Backends
-    "MemoryBackend",
-    "DiskBackend",
-    "ZarrBackend",
-    # File manager
-    "FileManager",
-    # Registry
-    "BackendRegistry",
-    # Atomic operations
-    "atomic_write",
-    "atomic_write_json",
-    # Exceptions
-    "StorageError",
-    "StorageResolutionError",
-    "BackendNotFoundError",
-    "UnsupportedFormatError",
-    # Streaming (optional)
+    "StorageBackend",
     "StreamingBackend",
+    "storage_registry",
+    "reset_memory_backend",
+    "ensure_storage_registry",
+    "get_backend",
+    "get_backend_instance",
+    "cleanup_backend_connections",
+    "cleanup_all_backends",
+    "register_cleanup_callback",
+    "STORAGE_BACKENDS",
+    "DiskStorageBackend",
+    "MemoryStorageBackend",
+    "FileManager",
+    "file_lock",
+    "atomic_write_json",
+    "atomic_update_json",
+    "FileLockError",
+    "FileLockTimeoutError",
+    "AtomicMetadataWriter",
+    "MetadataWriteError",
+    "METADATA_CONFIG",
+    "get_metadata_path",
+    "get_subdirectory_name",
+    "resolve_subdirectory_path",
+    "detect_legacy_format",
+    "migrate_legacy_metadata",
+    "migrate_plate_metadata",
+    "detect_legacy_pipeline",
+    "migrate_pipeline_file",
+    "load_pipeline_with_migration",
+    "ROI",
+    "PolygonShape",
+    "PolylineShape",
+    "MaskShape",
+    "PointShape",
+    "EllipseShape",
+    "extract_rois_from_labeled_mask",
+    "load_rois_from_json",
+    "load_rois_from_zip",
+    "materialize_rois",
+    "StreamingDataType",
+    "NapariShapeType",
+    "NapariStreamingBackend",
+    "FijiStreamingBackend",
+    "ZarrStorageBackend",
+    "OMEROLocalBackend",
+    "OMEROFileFormatRegistry",
 ]
 
+_LAZY_BACKEND_REGISTRY = {
+    "NapariStreamingBackend": ("polystore.napari_stream", "NapariStreamingBackend"),
+    "FijiStreamingBackend": ("polystore.fiji_stream", "FijiStreamingBackend"),
+    "ZarrStorageBackend": ("polystore.zarr", "ZarrStorageBackend"),
+    "OMEROLocalBackend": ("polystore.omero_local", "OMEROLocalBackend"),
+    "OMEROFileFormatRegistry": ("polystore.omero_local", "OMEROFileFormatRegistry"),
+}
+
+
+def __getattr__(name):
+    """Lazy import of optional/extra backend classes."""
+    if name not in _LAZY_BACKEND_REGISTRY:
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+    if os.getenv("POLYSTORE_SUBPROCESS_NO_GPU") == "1":
+        class PlaceholderBackend:
+            pass
+        PlaceholderBackend.__name__ = name
+        PlaceholderBackend.__qualname__ = name
+        return PlaceholderBackend
+
+    module_path, class_name = _LAZY_BACKEND_REGISTRY[name]
+    import importlib
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)

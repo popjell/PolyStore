@@ -3,7 +3,7 @@
 Disk-based storage backend implementation.
 
 This module provides a concrete implementation of the storage backend interfaces
-for local disk storage.
+for local disk storage. It strictly enforces VFS boundaries and doctrinal clauses.
 """
 
 import logging
@@ -14,9 +14,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import numpy as np
 
+from .constants import Backend, MemoryType
 from .formats import FileFormat
 from .base import StorageBackend
-from .lazy_imports import get_torch, get_jax, get_jnp, get_cupy, get_tf
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +28,29 @@ def optional_import(module_name):
         return None
 
 # Optional dependencies at module level (not instance level to avoid pickle issues)
-# Skip GPU libraries if running in no-GPU mode
-if os.getenv('POLYSTORE_NO_GPU') == '1':
+# Skip GPU libraries in subprocess runner mode
+if os.getenv("POLYSTORE_SUBPROCESS_NO_GPU") == "1":
     torch = None
     jax = None
     jnp = None
     cupy = None
     tf = None
-    logger.info("No-GPU mode - skipping GPU library imports in disk backend")
+    logger.info("Subprocess runner mode - skipping GPU library imports in disk backend")
 else:
+    from .lazy_imports import get_torch, get_jax, get_jnp, get_cupy, get_tf
     torch = get_torch()
     jax = get_jax()
     jnp = get_jnp()
     cupy = get_cupy()
     tf = get_tf()
 tifffile = optional_import("tifffile")
+
+# Optional arraybridge integration for memory conversion
+try:
+    from arraybridge import convert_memory as _convert_memory, detect_memory_type as _detect_memory_type
+except Exception:
+    _convert_memory = None
+    _detect_memory_type = None
 
 class FileFormatRegistry:
     def __init__(self):
@@ -64,9 +72,9 @@ class FileFormatRegistry:
         return ext.lower() in self._writers and ext.lower() in self._readers
 
 
-class DiskBackend(StorageBackend):
+class DiskStorageBackend(StorageBackend):
     """Disk storage backend with automatic registration."""
-    _backend_type = "disk"
+    _backend_type = Backend.DISK.value
     def __init__(self):
         self.format_registry = FileFormatRegistry()
         self._register_formats()
@@ -175,6 +183,11 @@ class DiskBackend(StorageBackend):
 
     def _csv_writer(self, path, data, **kwargs):
         import csv
+        # Handle pre-formatted CSV strings (from pandas to_csv)
+        if isinstance(data, str):
+            path.write_text(data)
+            return
+
         # Assume data is a list of rows or a dict
         with path.open('w', newline='') as f:
             if isinstance(data, dict):
@@ -204,11 +217,8 @@ class DiskBackend(StorageBackend):
 
     def _roi_zip_reader(self, path, **kwargs):
         """Read ROIs from .roi.zip archive."""
-        try:
-            from openhcs.core.roi import load_rois_from_zip
-            return load_rois_from_zip(path)
-        except ImportError:
-            raise ImportError("ROI support requires the openhcs package. Install with: pip install openhcs")
+        from .roi import load_rois_from_zip
+        return load_rois_from_zip(path)
 
     def _csv_reader(self, path):
         import csv
@@ -273,18 +283,16 @@ class DiskBackend(StorageBackend):
             TypeError: If output_path is not a valid path type or content_type is not specified
             ValueError: If the data cannot be saved
         """
+        from .roi import ROI
+
         disk_output_path = Path(output_path)
 
-        # Explicit type dispatch for ROI data (if openhcs is available)
-        try:
-            from openhcs.core.roi import ROI
-            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], ROI):
-                # ROI data - save as JSON
-                images_dir = kwargs.pop('images_dir', None)
-                self._save_rois(data, disk_output_path, images_dir=images_dir, **kwargs)
-                return
-        except ImportError:
-            pass  # OpenHCS not available, skip ROI check
+        # Explicit type dispatch for ROI data
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], ROI):
+            # ROI data - save as JSON
+            images_dir = kwargs.pop('images_dir', None)
+            self._save_rois(data, disk_output_path, images_dir=images_dir, **kwargs)
+            return
 
         ext = disk_output_path.suffix.lower()
         if not self.format_registry.is_registered(ext):
@@ -330,10 +338,35 @@ class DiskBackend(StorageBackend):
         if len(data_list) != len(output_paths):
             raise ValueError(f"data_list length ({len(data_list)}) must match output_paths length ({len(output_paths)})")
 
-        # Save each data object using existing save method
-        # GPU array conversions are handled by the individual format writers
-        for data, output_path in zip(data_list, output_paths):
-            self.save(data, output_path, **kwargs)
+        # Convert GPU arrays to CPU numpy arrays using OpenHCS memory conversion system
+        cpu_data_list = []
+        for data in data_list:
+            if _detect_memory_type:
+                source_type = _detect_memory_type(data)
+                if source_type == MemoryType.NUMPY.value:
+                    cpu_data_list.append(data)
+                elif _convert_memory:
+                    numpy_data = _convert_memory(
+                        data=data,
+                        source_type=source_type,
+                        target_type=MemoryType.NUMPY.value,
+                        gpu_id=0,
+                    )
+                    cpu_data_list.append(numpy_data)
+                else:
+                    cpu_data_list.append(np.asarray(data))
+            else:
+                # Fallback conversion without arraybridge
+                if hasattr(data, "cpu") and hasattr(data, "numpy"):
+                    cpu_data_list.append(data.cpu().numpy())
+                elif hasattr(data, "get"):
+                    cpu_data_list.append(data.get())
+                else:
+                    cpu_data_list.append(np.asarray(data))
+
+        # Save converted data using existing save method
+        for cpu_data, output_path in zip(cpu_data_list, output_paths):
+            self.save(cpu_data, output_path, **kwargs)
 
     def list_files(self, directory: Union[str, Path], pattern: Optional[str] = None,
                   extensions: Optional[Set[str]] = None, recursive: bool = False) -> List[Union[str,Path]]:
@@ -506,13 +539,11 @@ class DiskBackend(StorageBackend):
             TypeError: If directory is not a valid path type
             ValueError: If there is an error creating the directory
         """
-        # 🔒 Clause 17 — VFS Boundary Enforcement
         try:
             disk_directory = Path(directory)
             disk_directory.mkdir(parents=True, exist_ok=True)
             return directory
         except OSError as e:
-            # 🔒 Clause 65 — No Fallback Logic
             # Propagate the error with additional context
             raise ValueError(f"Error creating directory {disk_directory}: {e}") from e
 
@@ -708,11 +739,7 @@ class DiskBackend(StorageBackend):
         """
         import zipfile
         import numpy as np
-        
-        try:
-            from openhcs.core.roi import PolygonShape, MaskShape, PointShape, EllipseShape
-        except ImportError:
-            raise ImportError("ROI support requires the openhcs package")
+        from .roi import PolygonShape, PolylineShape, MaskShape, PointShape, EllipseShape
 
         output_path = Path(output_path)
 
@@ -724,7 +751,7 @@ class DiskBackend(StorageBackend):
             output_path = output_path.with_suffix('.roi.zip')
 
         try:
-            from roifile import ImagejRoi
+            from roifile import ImagejRoi, ROI_TYPE
         except ImportError:
             logger.error("roifile library not available - cannot save ROIs")
             raise ImportError("roifile library required for ROI saving. Install with: pip install roifile")
@@ -741,6 +768,21 @@ class DiskBackend(StorageBackend):
                         ij_roi = ImagejRoi.frompoints(coords_xy)
 
                         # Use incrementing counter for unique filenames (avoid duplicate names from label values)
+                        ij_roi.name = f"ROI_{roi_count + 1}"
+
+                        # Write to zip archive
+                        roi_bytes = ij_roi.tobytes()
+                        zf.writestr(f"{roi_count + 1:04d}.roi", roi_bytes)
+                        roi_count += 1
+
+                    elif isinstance(shape, PolylineShape):
+                        # Convert polyline to ImageJ polyline ROI
+                        # roifile expects (x, y) coordinates, but we have (y, x)
+                        coords_xy = shape.coordinates[:, [1, 0]]  # Swap columns
+                        ij_roi = ImagejRoi.frompoints(coords_xy)
+                        ij_roi.roitype = ROI_TYPE.POLYLINE
+
+                        # Use incrementing counter for unique filenames
                         ij_roi.name = f"ROI_{roi_count + 1}"
 
                         # Write to zip archive

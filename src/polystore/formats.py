@@ -50,8 +50,8 @@ FILE_FORMAT_EXTENSIONS = {
     FileFormat.ROI: [".roi.zip"],
 }
 
-# Default image extensions
-DEFAULT_IMAGE_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+# Default image extensions (aligned with OpenHCS defaults)
+DEFAULT_IMAGE_EXTENSIONS = {".tif", ".tiff", ".TIF", ".TIFF"}
 
 
 def get_format_from_extension(ext: str) -> FileFormat:

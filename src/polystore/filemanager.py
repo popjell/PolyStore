@@ -73,10 +73,11 @@ class FileManager:
             the same registry. This ensures shared state (especially for memory backend).
         """
         # Normalize backend name
-        backend_name = backend_name.lower()
-
         if backend_name is None:
-            raise StorageResolutionError(f"Backend '{backend_name}' not found in registry")
+            raise StorageResolutionError("Backend name must be provided")
+        if hasattr(backend_name, "value"):
+            backend_name = backend_name.value
+        backend_name = str(backend_name).lower()
 
         try:
             # Get the backend instance from the registry dictionary
@@ -236,8 +237,6 @@ class FileManager:
         # List image files and apply natural sorting
         from .utils import natural_sort
         files = backend_instance.list_files(str(directory), pattern, extensions, recursive)
-        # Ensure we pass strings to natural_sort (backends may return Path objects)
-        files = [str(f) for f in files]
         return natural_sort(files)
 
 
@@ -274,8 +273,6 @@ class FileManager:
         # List files and apply natural sorting
         from .utils import natural_sort
         files = backend_instance.list_files(str(directory), pattern, extensions, recursive, **kwargs)
-        # Ensure we pass strings to natural_sort (backends may return Path objects)
-        files = [str(f) for f in files]
         return natural_sort(files)
 
 
@@ -771,4 +768,3 @@ class FileManager:
         except Exception:
             # Return False for any error (file not found, not a symlink, backend issues)
             return False
-

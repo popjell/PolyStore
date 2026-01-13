@@ -1,3 +1,4 @@
+# polystore/base.py
 """
 Abstract base classes for storage backends.
 
@@ -7,22 +8,122 @@ that all storage backends must fulfill.
 """
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
-
+from .constants import Backend
 from .exceptions import StorageResolutionError
 from .registry import AutoRegisterMeta
 
 logger = logging.getLogger(__name__)
 
 
-class DataSink(ABC):
+class PicklableBackend(ABC):
+    """
+    Abstract base class for storage backends that support pickling with connection parameters.
+
+    Backends that maintain network connections or other unpicklable resources must
+    explicitly inherit from this ABC and implement the required methods to be safely
+    pickled and unpickled in multiprocessing workers.
+
+    This is particularly important for backends that maintain:
+    - Network connections (e.g., OMERO, remote databases, S3)
+    - File handles that can't cross process boundaries
+    - Authentication sessions
+
+    The pattern is:
+    1. Main process: Backend stores connection params via get_connection_params()
+    2. Pickling: ProcessingContext preserves these params
+    3. Worker process: Backend recreates connection using set_connection_params()
+
+    This uses nominal typing (ABC) not structural typing (Protocol), so
+    explicit inheritance is required for isinstance() checks to work.
+    """
+
+    @abstractmethod
+    def get_connection_params(self) -> Optional[Dict[str, Any]]:
+        """
+        Return connection parameters for worker process reconnection.
+
+        Returns:
+            Dictionary of connection parameters (host, port, username, etc.)
+            or None if no connection parameters are available.
+
+        Note:
+            Passwords should NOT be included in connection params.
+            They should be retrieved from environment variables in the worker.
+        """
+        pass
+
+    @abstractmethod
+    def set_connection_params(self, params: Optional[Dict[str, Any]]) -> None:
+        """
+        Set connection parameters (used during unpickling).
+
+        Args:
+            params: Dictionary of connection parameters or None
+        """
+        pass
+
+
+class BackendBase(metaclass=AutoRegisterMeta):
+    """
+    Base class for all storage backends (read-only and read-write).
+
+    Defines the registry and common interface for backend discovery.
+    Concrete backends should inherit from StorageBackend, ReadOnlyBackend, or DataSink.
+    """
+    __registry_key__ = '_backend_type'
+
+    # Enable automatic discovery of backends in polystore package
+    from metaclass_registry import RegistryConfig, LazyDiscoveryDict
+    __registry_config__ = RegistryConfig(
+        registry_dict=LazyDiscoveryDict(),
+        key_attribute='_backend_type',
+        skip_if_no_key=True,
+        registry_name='backend',
+        discovery_package='polystore',
+        discovery_recursive=False,  # All backends are in polystore/*.py (flat structure)
+    )
+
+    @property
+    @abstractmethod
+    def requires_filesystem_validation(self) -> bool:
+        """
+        Whether this backend requires filesystem validation.
+
+        Returns:
+            True for local filesystem backends, False for virtual/remote/streaming
+        """
+        pass
+
+    # Class attribute: can be accessed without instantiation
+    supports_arbitrary_files: bool = True
+    """
+    Whether this backend can save arbitrary file formats (e.g., .tif, .csv, .roi.zip).
+    
+    True for backends that handle files directly (disk, streaming viewers)
+    False for backends that only handle array data (zarr, HDF5)
+    
+    Override this in specific backends that cannot handle arbitrary files.
+    Default is True for backwards compatibility.
+    """
+
+
+class DataSink(BackendBase):
     """
     Abstract base class for data destinations.
 
     Defines the minimal interface for sending data to any destination,
     whether storage, streaming, or other data handling systems.
+
+    This interface follows OpenHCS principles:
+    - Fail-loud: No defensive programming, explicit error handling
+    - Minimal: Only essential operations both storage and streaming need
+    - Generic: Enables any type of data destination backend
+
+    Inherits from BackendBase for automatic registration.
     """
 
     @abstractmethod
@@ -42,9 +143,7 @@ class DataSink(ABC):
         pass
 
     @abstractmethod
-    def save_batch(
-        self, data_list: List[Any], identifiers: List[Union[str, Path]], **kwargs
-    ) -> None:
+    def save_batch(self, data_list: List[Any], identifiers: List[Union[str, Path]], **kwargs) -> None:
         """
         Send multiple data objects to the destination in a single operation.
 
@@ -61,12 +160,14 @@ class DataSink(ABC):
         pass
 
 
-class DataSource(ABC):
+class DataSource(BackendBase):
     """
     Abstract base class for read-only data sources.
 
     Defines the minimal interface for loading data from any source,
     whether filesystem, virtual workspace, remote storage, or databases.
+
+    This is the read-only counterpart to DataSink.
     """
 
     @abstractmethod
@@ -102,14 +203,9 @@ class DataSource(ABC):
         pass
 
     @abstractmethod
-    def list_files(
-        self,
-        directory: Union[str, Path],
-        pattern: Optional[str] = None,
-        extensions: Optional[Set[str]] = None,
-        recursive: bool = False,
-        **kwargs,
-    ) -> List[str]:
+    def list_files(self, directory: Union[str, Path], pattern: Optional[str] = None,
+                  extensions: Optional[Set[str]] = None, recursive: bool = False,
+                  **kwargs) -> List[str]:
         """
         List files in a directory.
 
@@ -152,6 +248,9 @@ class VirtualBackend(DataSink):
 
     Virtual backends generate file listings on-demand without real filesystem operations.
     Examples: OMERO (generates filenames from plate structure), S3 (lists objects), HTTP APIs.
+
+    Virtual backends may require additional context via kwargs.
+    Backends MUST validate required kwargs and raise TypeError if missing.
     """
 
     @abstractmethod
@@ -161,7 +260,7 @@ class VirtualBackend(DataSink):
 
         Args:
             file_path: Virtual path to load
-            **kwargs: Backend-specific context
+            **kwargs: Backend-specific context (e.g., plate_id for OMERO)
 
         Returns:
             The loaded data
@@ -193,14 +292,9 @@ class VirtualBackend(DataSink):
         pass
 
     @abstractmethod
-    def list_files(
-        self,
-        directory: Union[str, Path],
-        pattern: Optional[str] = None,
-        extensions: Optional[Set[str]] = None,
-        recursive: bool = False,
-        **kwargs,
-    ) -> List[str]:
+    def list_files(self, directory: Union[str, Path], pattern: Optional[str] = None,
+                  extensions: Optional[Set[str]] = None, recursive: bool = False,
+                  **kwargs) -> List[str]:
         """
         Generate virtual file listing.
 
@@ -209,7 +303,7 @@ class VirtualBackend(DataSink):
             pattern: Optional file pattern filter
             extensions: Optional set of file extensions to filter
             recursive: Whether to list recursively
-            **kwargs: Backend-specific context
+            **kwargs: Backend-specific context (e.g., plate_id for OMERO)
 
         Returns:
             List of virtual filenames
@@ -234,29 +328,17 @@ class VirtualBackend(DataSink):
         return False
 
 
-class BackendBase(metaclass=AutoRegisterMeta):
-    """
-    Base class for all storage backends (read-only and read-write).
-
-    Defines the registry and common interface for backend discovery.
-    Concrete backends should inherit from StorageBackend or ReadOnlyBackend.
-    """
-
-    __registry_key__ = "_backend_type"
-
-    @property
-    @abstractmethod
-    def requires_filesystem_validation(self) -> bool:
-        """Whether this backend requires filesystem validation."""
-        pass
-
-
-class ReadOnlyBackend(BackendBase, DataSource):
+class ReadOnlyBackend(DataSource):
     """
     Abstract base class for read-only storage backends with auto-registration.
 
     Use this for backends that only need to read data (virtual workspaces,
     read-only mounts, archive viewers, etc.).
+
+    Inherits from DataSource (which inherits from BackendBase for registration).
+    No write operations - clean separation of concerns.
+
+    Concrete implementations are automatically registered via AutoRegisterMeta.
     """
 
     @property
@@ -269,8 +351,13 @@ class ReadOnlyBackend(BackendBase, DataSource):
         """
         return False
 
+    # Inherits all abstract methods from DataSource:
+    # - load(), load_batch()
+    # - list_files(), list_dir()
+    # - exists(), is_file(), is_dir()
 
-class StorageBackend(BackendBase, DataSource, DataSink):
+
+class StorageBackend(DataSource, DataSink):
     """
     Abstract base class for read-write storage backends.
 
@@ -279,6 +366,8 @@ class StorageBackend(BackendBase, DataSource, DataSink):
 
     Concrete implementations are automatically registered via AutoRegisterMeta.
     """
+    # Inherits load(), load_batch(), list_files(), etc. from DataSource
+    # Inherits save() and save_batch() from DataSink
 
     @property
     def requires_filesystem_validation(self) -> bool:
@@ -292,20 +381,21 @@ class StorageBackend(BackendBase, DataSource, DataSink):
 
     def exists(self, path: Union[str, Path]) -> bool:
         """
-        Check if a path exists (is a valid file or directory).
+        Declarative truth test: does the path resolve to a valid object?
 
-        Args:
-            path: Path to check
+        A path only 'exists' if:
+        - it is a valid file or directory
+        - or it is a symlink that resolves to a valid file or directory
 
         Returns:
-            bool: True if path resolves to a real object
+            bool: True if path structurally resolves to a real object
         """
         try:
             return self.is_file(path)
         except (FileNotFoundError, NotADirectoryError, StorageResolutionError):
             pass
         except IsADirectoryError:
-            # Path exists but is a directory
+            # Path exists but is a directory, so check if it's a valid directory
             try:
                 return self.is_dir(path)
             except (FileNotFoundError, NotADirectoryError, StorageResolutionError):
@@ -316,3 +406,155 @@ class StorageBackend(BackendBase, DataSource, DataSink):
             return self.is_dir(path)
         except (FileNotFoundError, NotADirectoryError, StorageResolutionError):
             return False
+
+
+def _create_storage_registry() -> Dict[str, DataSink]:
+    """
+    Create a new storage registry using metaclass-based discovery.
+
+    This function creates a dictionary mapping backend names to their respective
+    storage backend instances using automatic discovery and registration.
+
+    Now returns Dict[str, DataSink] to support both StorageBackend and StreamingBackend.
+
+    Returns:
+        A dictionary mapping backend names to DataSink instances (polymorphic)
+
+    Note:
+        This function now uses the metaclass-based registry system for automatic
+        backend discovery, eliminating hardcoded imports.
+    """
+    # Import the metaclass-based registry system
+    from .backend_registry import create_storage_registry
+
+    return create_storage_registry()
+
+
+class _LazyStorageRegistry(dict):
+    """
+    Storage registry that auto-initializes on first access.
+
+    This maintains backward compatibility with existing code that
+    directly accesses storage_registry without calling ensure_storage_registry().
+    All read operations trigger lazy initialization, while write operations
+    (like OMERO backend registration) work without initialization.
+    """
+
+    def __getitem__(self, key):
+        ensure_storage_registry()
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        # Allow setting without initialization (for OMERO backend registration)
+        return super().__setitem__(key, value)
+
+    def __contains__(self, key):
+        ensure_storage_registry()
+        return super().__contains__(key)
+
+    def get(self, key, default=None):
+        ensure_storage_registry()
+        return super().get(key, default)
+
+    def keys(self):
+        ensure_storage_registry()
+        return super().keys()
+
+    def values(self):
+        ensure_storage_registry()
+        return super().values()
+
+    def items(self):
+        ensure_storage_registry()
+        return super().items()
+
+
+# Global singleton storage registry - created lazily on first access
+# This is the shared registry instance that all components should use
+storage_registry: Dict[str, DataSink] = _LazyStorageRegistry()
+_registry_initialized = False
+# Use RLock (reentrant lock) to allow same thread to acquire lock multiple times
+# This prevents deadlocks when gc.collect() triggers __del__ methods that access storage_registry
+_registry_lock = threading.RLock()
+
+
+def ensure_storage_registry() -> None:
+    """
+    Ensure storage registry is initialized.
+
+    Lazily creates the registry on first access to avoid importing
+    GPU-heavy backends during module import. This provides instant
+    imports while maintaining backward compatibility.
+
+    Thread-safe: Multiple threads can call this simultaneously.
+    """
+    global _registry_initialized
+
+    # Double-checked locking pattern for thread safety
+    if not _registry_initialized:
+        with _registry_lock:
+            if not _registry_initialized:
+                storage_registry.update(_create_storage_registry())
+                _registry_initialized = True
+                logger.info("Lazily initialized storage registry")
+
+
+def get_backend(backend_type: str) -> DataSink:
+    """
+    Get a backend by type, ensuring registry is initialized.
+
+    Args:
+        backend_type: Backend type (e.g., 'disk', 'memory', 'zarr')
+
+    Returns:
+        Backend instance
+
+    Raises:
+        KeyError: If backend type not found
+    """
+    ensure_storage_registry()
+
+    if hasattr(backend_type, "value"):
+        backend_type = backend_type.value
+    backend_key = str(backend_type).lower()
+    if backend_key not in storage_registry:
+        raise KeyError(f"Backend '{backend_type}' not found. "
+                      f"Available: {list(storage_registry.keys())}")
+
+    return storage_registry[backend_key]
+
+
+def reset_memory_backend() -> None:
+    """
+    Clear files from the memory backend while preserving directory structure.
+
+    This function clears all file entries from the existing memory backend but preserves
+    directory entries (None values). This prevents key collisions between plate executions
+    while maintaining the directory structure needed for subsequent operations.
+
+    Benefits over full reset:
+    - Preserves directory structure created by path planner
+    - Prevents "Parent path does not exist" errors on subsequent runs
+    - Avoids key collisions for special inputs/outputs
+    - Maintains performance by not recreating directory hierarchy
+
+    Note:
+        This only affects the memory backend. Other backends (disk, zarr) are not modified.
+        Caller is responsible for calling gc.collect() and GPU cleanup after this function.
+    """
+
+    # Clear files from existing memory backend while preserving directories
+    memory_backend = storage_registry[Backend.MEMORY.value]
+
+    # DEBUG: Log what's in memory before clearing
+    existing_keys = list(memory_backend._memory_store.keys())
+    logger.info(f"🔍 VFS_CLEAR: Memory backend has {len(existing_keys)} entries BEFORE clear")
+    logger.info(f"🔍 VFS_CLEAR: First 10 keys: {existing_keys[:10]}")
+
+    memory_backend.clear_files_only()
+
+    # DEBUG: Log what's in memory after clearing
+    remaining_keys = list(memory_backend._memory_store.keys())
+    logger.info(f"🔍 VFS_CLEAR: Memory backend has {len(remaining_keys)} entries AFTER clear (directories only)")
+    logger.info(f"🔍 VFS_CLEAR: First 10 remaining keys: {remaining_keys[:10]}")
+    logger.info("Memory backend reset - files cleared, directories preserved")

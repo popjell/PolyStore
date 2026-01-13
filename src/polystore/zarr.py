@@ -1,6 +1,6 @@
-# openhcs/io/storage/backends/zarr.py
+# polystore/zarr.py
 """
-Zarr storage backend module for OpenHCS.
+Zarr storage backend module for polystore.
 
 This module provides a Zarr-backed implementation of the MicroscopyStorageBackend interface.
 It stores data in a Zarr store on disk and supports overlay operations
@@ -21,6 +21,24 @@ import zarr
 _ome_zarr_state = {'available': None, 'cache': {}, 'event': threading.Event(), 'thread': None}
 
 logger = logging.getLogger(__name__)
+
+# Zarr attribute keys (polystore prefix) with legacy OpenHCS fallback
+_ATTR_PREFIX = "polystore"
+_LEGACY_ATTR_PREFIX = "openhcs"
+ATTR_FILENAME_MAP = f"{_ATTR_PREFIX}_filename_map"
+ATTR_OUTPUT_PATHS = f"{_ATTR_PREFIX}_output_paths"
+ATTR_DIMENSIONS = f"{_ATTR_PREFIX}_dimensions"
+LEGACY_ATTR_FILENAME_MAP = f"{_LEGACY_ATTR_PREFIX}_filename_map"
+LEGACY_ATTR_OUTPUT_PATHS = f"{_LEGACY_ATTR_PREFIX}_output_paths"
+LEGACY_ATTR_DIMENSIONS = f"{_LEGACY_ATTR_PREFIX}_dimensions"
+
+
+def _get_attr(attrs: Dict[str, Any], key: str, legacy_key: str):
+    if key in attrs:
+        return attrs[key]
+    if legacy_key in attrs:
+        return attrs[legacy_key]
+    return None
 
 
 # Decorator for passthrough to disk backend
@@ -75,8 +93,9 @@ def passthrough_to_disk(*extensions: str, ensure_parent_dir: bool = False):
 
             # Check if path matches passthrough extensions
             if path_arg and any(path_arg.endswith(ext) for ext in extensions):
-                # Use local backend registry to avoid OpenHCS dependency
-                disk_backend = get_backend_instance('disk')
+                from .constants import Backend
+                from .backend_registry import get_backend_instance
+                disk_backend = get_backend_instance(Backend.DISK.value)
 
                 # Ensure parent directory exists if requested (for save operations)
                 if ensure_parent_dir:
@@ -159,15 +178,15 @@ except ImportError:
     import portalocker
     FCNTL_AVAILABLE = False
 
-from .backend_registry import get_backend_instance
+from .constants import Backend
 from .base import StorageBackend
 from .exceptions import StorageResolutionError
 
 
 class ZarrStorageBackend(StorageBackend):
     """Zarr storage backend with automatic registration."""
-    # Use simple backend type string to avoid depending on OpenHCS enums
-    _backend_type = "zarr"
+    _backend_type = Backend.ZARR.value
+    supports_arbitrary_files = False  # Class attribute: zarr only handles array data
     """
     Zarr storage backend implementation with configurable compression.
 
@@ -180,6 +199,10 @@ class ZarrStorageBackend(StorageBackend):
     - Configurable compression (Blosc, Zlib, LZ4, Zstd, or none)
     - Configurable compression levels
     - Full path mapping for batch operations
+    
+    Limitations:
+    - Only supports array data (numpy arrays)
+    - Cannot save arbitrary file formats (CSV, ROI.ZIP, etc.)
     """
 
     def __init__(self, zarr_config: Optional['ZarrConfig'] = None):
@@ -189,7 +212,7 @@ class ZarrStorageBackend(StorageBackend):
         Args:
             zarr_config: ZarrConfig dataclass with all zarr settings (uses defaults if None)
         """
-        # Import local ZarrConfig to remain OpenHCS-agnostic
+        # Import here to avoid circular imports
         from .config import ZarrConfig
 
         if zarr_config is None:
@@ -367,8 +390,11 @@ class ZarrStorageBackend(StorageBackend):
                             field_group = well_group["0"]
                             if "0" in field_group.array_keys():
                                 field_array = field_group["0"]
-                                if "openhcs_filename_map" in field_array.attrs:
-                                    filename_map = dict(field_array.attrs["openhcs_filename_map"])
+                                filename_map_attr = _get_attr(
+                                    field_array.attrs, ATTR_FILENAME_MAP, LEGACY_ATTR_FILENAME_MAP
+                                )
+                                if filename_map_attr is not None:
+                                    filename_map = dict(filename_map_attr)
 
                                     # Check which requested files are in this well
                                     for i, path in enumerate(file_paths):
@@ -591,9 +617,9 @@ class ZarrStorageBackend(StorageBackend):
             filename_map[Path(path).name] = (field_idx, channel_idx, z_idx)
 
         field_array = field_group['0']
-        field_array.attrs["openhcs_filename_map"] = filename_map
-        field_array.attrs["openhcs_output_paths"] = [str(path) for path in output_paths]
-        field_array.attrs["openhcs_dimensions"] = {
+        field_array.attrs[ATTR_FILENAME_MAP] = filename_map
+        field_array.attrs[ATTR_OUTPUT_PATHS] = [str(path) for path in output_paths]
+        field_array.attrs[ATTR_DIMENSIONS] = {
             "n_fields": n_fields,
             "n_channels": n_channels,
             "n_z": n_z
@@ -774,8 +800,11 @@ class ZarrStorageBackend(StorageBackend):
                                     field_group = well_group["0"]
                                     if "0" in field_group.array_keys():
                                         field_array = field_group["0"]
-                                        if "openhcs_output_paths" in field_array.attrs:
-                                            output_paths = field_array.attrs["openhcs_output_paths"]
+                                        output_paths_attr = _get_attr(
+                                            field_array.attrs, ATTR_OUTPUT_PATHS, LEGACY_ATTR_OUTPUT_PATHS
+                                        )
+                                        if output_paths_attr is not None:
+                                            output_paths = output_paths_attr
                                             for filename in output_paths:
                                                 filename_only = Path(filename).name
                                                 if _matches_filters(filename_only):
@@ -843,7 +872,8 @@ class ZarrStorageBackend(StorageBackend):
         # Passthrough to disk backend for text files (JSON, CSV, TXT)
         path_str = str(path)
         if path_str.endswith(('.json', '.csv', '.txt')):
-            disk_backend = get_backend_instance('disk')
+            from .backend_registry import get_backend_instance
+            disk_backend = get_backend_instance(Backend.DISK.value)
             return disk_backend.delete(path)
 
         path = str(path)
@@ -1263,7 +1293,3 @@ class ZarrSymlink:
 
     def __repr__(self):
         return f"<ZarrSymlink → {self.target}>"
-
-
-# Backwards-compatible name used by package public API
-ZarrBackend = ZarrStorageBackend
