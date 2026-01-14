@@ -9,6 +9,7 @@ for materializing data to disk when needed.
 
 import fnmatch
 import logging
+import os
 import threading
 from functools import wraps
 from pathlib import Path
@@ -22,22 +23,28 @@ _ome_zarr_state = {'available': None, 'cache': {}, 'event': threading.Event(), '
 
 logger = logging.getLogger(__name__)
 
-# Zarr attribute keys (polystore prefix) with legacy OpenHCS fallback
+# Zarr attribute keys (polystore prefix) with optional legacy fallback prefixes
 _ATTR_PREFIX = "polystore"
-_LEGACY_ATTR_PREFIX = "openhcs"
+_LEGACY_ATTR_PREFIXES = [
+    prefix.strip()
+    for prefix in os.getenv("POLYSTORE_LEGACY_ATTR_PREFIXES", "").split(",")
+    if prefix.strip()
+]
 ATTR_FILENAME_MAP = f"{_ATTR_PREFIX}_filename_map"
 ATTR_OUTPUT_PATHS = f"{_ATTR_PREFIX}_output_paths"
 ATTR_DIMENSIONS = f"{_ATTR_PREFIX}_dimensions"
-LEGACY_ATTR_FILENAME_MAP = f"{_LEGACY_ATTR_PREFIX}_filename_map"
-LEGACY_ATTR_OUTPUT_PATHS = f"{_LEGACY_ATTR_PREFIX}_output_paths"
-LEGACY_ATTR_DIMENSIONS = f"{_LEGACY_ATTR_PREFIX}_dimensions"
+LEGACY_ATTR_FILENAME_MAPS = [f"{prefix}_filename_map" for prefix in _LEGACY_ATTR_PREFIXES]
+LEGACY_ATTR_OUTPUT_PATHS = [f"{prefix}_output_paths" for prefix in _LEGACY_ATTR_PREFIXES]
+LEGACY_ATTR_DIMENSIONS = [f"{prefix}_dimensions" for prefix in _LEGACY_ATTR_PREFIXES]
+DEFAULT_PLATE_NAME = os.getenv("POLYSTORE_PLATE_NAME", "Polystore_Plate")
 
 
-def _get_attr(attrs: Dict[str, Any], key: str, legacy_key: str):
+def _get_attr(attrs: Dict[str, Any], key: str, legacy_keys: List[str]):
     if key in attrs:
         return attrs[key]
-    if legacy_key in attrs:
-        return attrs[legacy_key]
+    for legacy_key in legacy_keys:
+        if legacy_key in attrs:
+            return attrs[legacy_key]
     return None
 
 
@@ -391,7 +398,7 @@ class ZarrStorageBackend(StorageBackend):
                             if "0" in field_group.array_keys():
                                 field_array = field_group["0"]
                                 filename_map_attr = _get_attr(
-                                    field_array.attrs, ATTR_FILENAME_MAP, LEGACY_ATTR_FILENAME_MAP
+                                    field_array.attrs, ATTR_FILENAME_MAP, LEGACY_ATTR_FILENAME_MAPS
                                 )
                                 if filename_map_attr is not None:
                                     filename_map = dict(filename_map_attr)
@@ -713,7 +720,7 @@ class ZarrStorageBackend(StorageBackend):
             wells_metadata,
             acquisitions=acquisitions,
             field_count=1,
-            name="OpenHCS_Plate"
+            name=DEFAULT_PLATE_NAME
         )
 
 
@@ -990,7 +997,7 @@ class ZarrStorageBackend(StorageBackend):
         Check if the given Zarr path represents a logical symlink (based on attribute contract).
 
         Returns:
-            bool: True if the key exists and has an OpenHCS-declared symlink attribute
+            bool: True if the key exists and has a declared symlink attribute
             False if the key doesn't exist or is not a symlink
         """
         store, key = self._split_store_and_key(path)

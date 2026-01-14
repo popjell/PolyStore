@@ -1,8 +1,8 @@
 """
-Polystore constants extracted from OpenHCS.
+Polystore constants.
 
 Minimal, self-contained enum and constant definitions used by polystore backends.
-No external dependencies or openhcs imports.
+No external dependencies or framework-specific imports.
 """
 
 from enum import Enum

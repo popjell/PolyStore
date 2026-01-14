@@ -118,7 +118,7 @@ class DataSink(BackendBase):
     Defines the minimal interface for sending data to any destination,
     whether storage, streaming, or other data handling systems.
 
-    This interface follows OpenHCS principles:
+    This interface follows core design principles:
     - Fail-loud: No defensive programming, explicit error handling
     - Minimal: Only essential operations both storage and streaming need
     - Generic: Enables any type of data destination backend

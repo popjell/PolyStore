@@ -50,7 +50,7 @@ FILE_FORMAT_EXTENSIONS = {
     FileFormat.ROI: [".roi.zip"],
 }
 
-# Default image extensions (aligned with OpenHCS defaults)
+# Default image extensions
 DEFAULT_IMAGE_EXTENSIONS = {".tif", ".tiff", ".TIF", ".TIFF"}
 
 

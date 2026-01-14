@@ -1,5 +1,5 @@
 """
-Atomic file operations with locking for OpenHCS.
+Atomic file operations with locking.
 
 Provides utilities for atomic read-modify-write operations with file locking
 to prevent concurrency issues in multiprocessing environments.

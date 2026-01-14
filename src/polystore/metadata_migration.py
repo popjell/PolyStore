@@ -235,7 +235,7 @@ def migrate_plate_metadata(plate_dir: Path, dry_run: bool = False, backup_suffix
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Migrate OpenHCS legacy metadata files")
+    parser = argparse.ArgumentParser(description="Migrate legacy metadata files")
     parser.add_argument(
         "plate_directory",
         type=Path,

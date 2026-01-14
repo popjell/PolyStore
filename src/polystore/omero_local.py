@@ -6,6 +6,7 @@ Reads directly from OMERO binary repository, saves results back to OMERO.
 """
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,12 @@ from .base import VirtualBackend, PicklableBackend, storage_registry
 from .formats import FileFormat
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_OMERO_DESCRIPTION = os.getenv("POLYSTORE_OMERO_DESCRIPTION", "Processed by Polystore")
+DEFAULT_OMERO_WELL_DESCRIPTION_TEMPLATE = os.getenv(
+    "POLYSTORE_OMERO_WELL_DESCRIPTION_TEMPLATE",
+    "Processed image for well {well_id}, site {site}",
+)
 
 
 class OMEROFileFormatRegistry:
@@ -372,7 +379,7 @@ class OMEROLocalBackend(VirtualBackend, PicklableBackend):
             for site_idx_0based, wellsample in enumerate(well.listChildren()):
                 image = wellsample.getImage()
                 # Use enumeration order as site index (0-based)
-                # Convert to 1-based for OpenHCS
+                # Convert to 1-based indexing for downstream consumers
                 site_idx = site_idx_0based + 1
 
                 image_struct = ImageStructure(
@@ -879,7 +886,7 @@ class OMEROLocalBackend(VirtualBackend, PicklableBackend):
             sizeZ=sizeZ,
             sizeC=sizeC,
             sizeT=sizeT,
-            description=kwargs.get('description', 'Processed by OpenHCS'),
+            description=kwargs.get('description', DEFAULT_OMERO_DESCRIPTION),
             dataset=dataset
         )
 
@@ -1196,7 +1203,10 @@ class OMEROLocalBackend(VirtualBackend, PicklableBackend):
                 sizeZ=sizeZ,
                 sizeC=sizeC,
                 sizeT=sizeT,
-                description=f"OpenHCS processed image for well {well_id}, site {site}"
+                description=DEFAULT_OMERO_WELL_DESCRIPTION_TEMPLATE.format(
+                    well_id=well_id,
+                    site=site,
+                )
             )
 
             # Link image to well

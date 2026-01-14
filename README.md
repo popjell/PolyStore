@@ -186,5 +186,4 @@ Contributions welcome! Please see CONTRIBUTING.md for guidelines.
 
 ## Credits
 
-Developed by Tristan Simas. Extracted from the [OpenHCS](https://github.com/trissim/openhcs) project.
-
+Developed by Tristan Simas.

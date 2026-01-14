@@ -21,7 +21,7 @@ class CompressorConfig:
 
 @dataclass
 class ZarrConfig:
-    """Minimal Zarr configuration dataclass for polystore (OpenHCS-agnostic)."""
+    """Minimal Zarr configuration dataclass for polystore (framework-agnostic)."""
     compression_level: Optional[int] = None
     compressor: CompressorConfig = field(default_factory=CompressorConfig)
     chunk_strategy: ZarrChunkStrategy = ZarrChunkStrategy.WELL

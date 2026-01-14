@@ -325,7 +325,7 @@ class DiskStorageBackend(StorageBackend):
         """
         Save multiple files sequentially using existing save method.
 
-        Converts GPU arrays to CPU numpy arrays before saving using OpenHCS memory conversion system.
+        Converts GPU arrays to CPU numpy arrays before saving using the optional conversion hooks.
 
         Args:
             data_list: List of data objects to save
@@ -338,7 +338,7 @@ class DiskStorageBackend(StorageBackend):
         if len(data_list) != len(output_paths):
             raise ValueError(f"data_list length ({len(data_list)}) must match output_paths length ({len(output_paths)})")
 
-        # Convert GPU arrays to CPU numpy arrays using OpenHCS memory conversion system
+        # Convert GPU arrays to CPU numpy arrays using conversion hooks
         cpu_data_list = []
         for data in data_list:
             if _detect_memory_type:
